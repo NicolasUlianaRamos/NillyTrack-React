@@ -1,14 +1,17 @@
 import { Helmet } from "react-helmet-async";
 import hero from "@/assets/hero-books.jpg";
-import { FormEvent, useState, useEffect } from "react";
+import type React from 'react';
+import { FormEvent, useState, useEffect, useRef } from "react";
 import { useSearchParams, Link, useNavigate } from "react-router-dom";
 import { useHomeBooks } from "@/hooks/useHomeBooks";
 import { useSearchBooks } from "@/hooks/useSearchBooks";
+import { useSearchHistory } from "@/hooks/useSearchHistory";
 import { ItemCard } from "@/components/ItemCard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Carousel, CarouselContent, CarouselItem, CarouselNext, CarouselPrevious } from "@/components/ui/carousel";
+import { Clock, X } from 'lucide-react';
 
 const Index = () => {
   const navigate = useNavigate();
@@ -22,6 +25,12 @@ const Index = () => {
     }
   }, [initialQ, params, navigate]);
   const [q, setQ] = useState("");
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [focusedSuggestionIndex, setFocusedSuggestionIndex] = useState(-1);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const suggestionRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const searchHistory = useSearchHistory();
   const [view, setView] = useState<"books">("books"); // outras abas removidas enquanto não houver dados reais
   // limit apenas para consistência do form (valor fixo)
   const limit = 20;
@@ -35,8 +44,68 @@ const Index = () => {
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
     const query = q.trim();
-  if (query) navigate(`/busca?q=${encodeURIComponent(query)}&page=1&limit=${limit}`); else navigate("/");
+    if (query) {
+      // salvar no histórico imediatamente
+      searchHistory.addSearch(query);
+      navigate(`/busca?q=${encodeURIComponent(query)}&page=1&limit=${limit}`);
+    } else {
+      navigate("/");
+    }
   };
+
+  const handleSuggestionClick = (suggestion: string) => {
+    setQ(suggestion);
+    searchHistory.addSearch(suggestion);
+    setShowSuggestions(false);
+    navigate(`/busca?q=${encodeURIComponent(suggestion)}&page=1&limit=${limit}`);
+  };
+
+  const handleInputFocus = () => {
+    setShowSuggestions(true);
+    setFocusedSuggestionIndex(-1);
+  };
+
+  const handleInputChange = (value: string) => {
+    setQ(value);
+    setShowSuggestions(true);
+    setFocusedSuggestionIndex(-1);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    const suggestions = searchHistory.getFilteredHistory(q);
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setFocusedSuggestionIndex(prev => prev < suggestions.length - 1 ? prev + 1 : prev);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setFocusedSuggestionIndex(prev => prev > 0 ? prev - 1 : -1);
+    } else if (e.key === 'Enter') {
+      if (focusedSuggestionIndex >= 0 && suggestions[focusedSuggestionIndex]) {
+        e.preventDefault();
+        handleSuggestionClick(suggestions[focusedSuggestionIndex].query);
+      }
+    } else if (e.key === 'Escape') {
+      setShowSuggestions(false);
+      setFocusedSuggestionIndex(-1);
+      inputRef.current?.blur();
+    }
+  };
+
+  // Fechar dropdown ao clicar fora
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        dropdownRef.current &&
+        !dropdownRef.current.contains(event.target as Node) &&
+        inputRef.current &&
+        !inputRef.current.contains(event.target as Node)
+      ) {
+        setShowSuggestions(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   // (Busca local removida junto com dados mock)
 
@@ -72,12 +141,75 @@ const Index = () => {
           <form onSubmit={onSubmit} className="flex gap-2">
             <div className="relative flex-1">
               <Input
+                ref={inputRef}
                 value={q}
-                onChange={(e) => setQ(e.target.value)}
+                onChange={(e) => handleInputChange(e.target.value)}
+                onFocus={handleInputFocus}
+                onKeyDown={handleKeyDown}
                 placeholder="Pesquisar livros..."
                 aria-label="Pesquisar"
+                autoComplete="off"
                 className="pl-10 pr-4 py-2 rounded-full shadow-md border border-input focus:border-transparent focus:outline-none focus:shadow-lg focus:shadow-primary/20 transition-all bg-background/80 backdrop-blur-md"
               />
+
+              {showSuggestions && (
+                <div
+                  ref={dropdownRef}
+                  className="absolute top-full left-0 right-0 mt-1 bg-background border border-border rounded-lg shadow-lg z-50 max-h-60 overflow-y-auto"
+                >
+                  {(() => {
+                    const suggestions = searchHistory.getFilteredHistory(q);
+                    if (suggestions.length === 0) {
+                      return (
+                        <div className="p-3 text-sm text-muted-foreground text-center">
+                          {q.trim() ? 'Nenhuma pesquisa anterior encontrada' : 'Nenhuma pesquisa anterior'}
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <>
+                        <div className="p-2 text-xs font-medium text-muted-foreground border-b border-border flex items-center justify-between">
+                          <span className="flex items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            Pesquisas anteriores
+                          </span>
+                          {searchHistory.history.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); searchHistory.clearHistory(); setShowSuggestions(false); }}
+                              className="text-muted-foreground hover:text-foreground transition-colors text-xs"
+                            >
+                              Limpar tudo
+                            </button>
+                          )}
+                        </div>
+                        {suggestions.map((item, index) => (
+                          <button
+                            key={`${item.query}-${item.timestamp}`}
+                            ref={(el) => (suggestionRefs.current[index] = el)}
+                            type="button"
+                            onClick={() => handleSuggestionClick(item.query)}
+                            className={`w-full text-left px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground transition-colors flex items-center justify-between group ${index === focusedSuggestionIndex ? 'bg-accent text-accent-foreground' : ''}`}
+                          >
+                            <span className="flex items-center gap-2">
+                              <Clock className="w-4 h-4 text-muted-foreground" />
+                              {item.query}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); searchHistory.removeSearch(item.query); }}
+                              className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground transition-all p-1 rounded"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </button>
+                        ))}
+                      </>
+                    );
+                  })()}
+                </div>
+              )}
             </div>
             <Button
               type="submit"
